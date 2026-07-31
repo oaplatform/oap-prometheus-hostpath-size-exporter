@@ -1,0 +1,21 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/hostpath-size-exporter
+
+# Test binaries and profiling output
+*.test
+*.out
+
+# Go workspace/vendor
+vendor/
+
+# IDE
+.idea/
+*.iml
+
+# Local env files
+.env
