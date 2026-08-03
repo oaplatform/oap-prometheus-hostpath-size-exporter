@@ -7,7 +7,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/hostpath-size-exporter .
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM debian:trixie-slim
 COPY --from=builder /out/hostpath-size-exporter /hostpath-size-exporter
 
 # Runs as the distroless "nonroot" user by default. The container needs no
