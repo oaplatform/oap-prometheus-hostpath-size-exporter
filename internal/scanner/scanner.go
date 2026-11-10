@@ -1,5 +1,5 @@
-// Package scanner computes directory sizes and keeps a Prometheus gauge
-// updated on a per-directory refresh schedule.
+// Package scanner computes directory sizes on a per-directory refresh
+// schedule and reports each result to a caller-supplied callback.
 package scanner
 
 import (
@@ -8,10 +8,6 @@ import (
 	"log/slog"
 	"path/filepath"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus"
-
-	"hostpath-size-exporter/internal/config"
 )
 
 // ScanOnce walks root and returns the total apparent size (sum of regular
@@ -44,15 +40,14 @@ func ScanOnce(root string) (bytes int64, fileCount int, err error) {
 	return bytes, fileCount, nil
 }
 
-// Run scans hp.Path immediately, then on every hp.Interval tick, updating
-// gauge with the result. It runs until ctx is cancelled. A scan error is
-// logged and leaves the gauge at its last known value; it never stops the
-// loop. Run is safe to call concurrently for different Hostpaths sharing the
-// same gauge.
-func Run(ctx context.Context, hp config.Hostpath, gauge *prometheus.GaugeVec, logger *slog.Logger) {
-	scan(hp, gauge, logger)
+// Run scans path immediately, then on every interval tick, passing each
+// successful result to report. name is used only for logging. It runs until
+// ctx is cancelled. A scan error is logged and report is not called, so the
+// consumer keeps its last known value; an error never stops the loop.
+func Run(ctx context.Context, name, path string, interval time.Duration, logger *slog.Logger, report func(bytes int64)) {
+	scan(name, path, logger, report)
 
-	ticker := time.NewTicker(hp.Interval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -60,31 +55,29 @@ func Run(ctx context.Context, hp config.Hostpath, gauge *prometheus.GaugeVec, lo
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			scan(hp, gauge, logger)
+			scan(name, path, logger, report)
 		}
 	}
 }
 
-func scan(hp config.Hostpath, gauge *prometheus.GaugeVec, logger *slog.Logger) {
+func scan(name, path string, logger *slog.Logger, report func(bytes int64)) {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Error("scan panicked", "name", hp.Name, "path", hp.Path, "panic", r)
+			logger.Error("scan panicked", "name", name, "path", path, "panic", r)
 		}
 	}()
 
-	logger.Debug("scan start", "name", hp.Name, "path", hp.Path)
+	logger.Debug("scan start", "name", name, "path", path)
 	start := time.Now()
-
-	bytes, fileCount, err := ScanOnce(hp.Path)
+	bytes, fileCount, err := ScanOnce(path)
 	if err != nil {
-		logger.Error("scan failed", "name", hp.Name, "path", hp.Path, "error", err)
+		logger.Error("scan failed", "name", name, "path", path, "error", err)
 		return
 	}
-
-	gauge.WithLabelValues(hp.Name, hp.Path).Set(float64(bytes))
+	report(bytes)
 	logger.Info("scan complete",
-		"name", hp.Name,
-		"path", hp.Path,
+		"name", name,
+		"path", path,
 		"bytes", bytes,
 		"files", fileCount,
 		"duration", time.Since(start),

@@ -15,9 +15,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"hostpath-size-exporter/internal/config"
+	"hostpath-size-exporter/internal/discovery"
 	"hostpath-size-exporter/internal/metrics"
 	"hostpath-size-exporter/internal/scanner"
 )
@@ -31,21 +35,6 @@ func main() {
 
 	logger := newLogger(cfg.LogLevel)
 
-	if len(cfg.Hostpaths) == 0 {
-		logger.Warn("no --hostpath flags configured; exporter will serve an empty metric set")
-	}
-
-	names := make([]string, len(cfg.Hostpaths))
-	for i, hp := range cfg.Hostpaths {
-		names[i] = fmt.Sprintf("%s=%s(%s)", hp.Name, hp.Path, hp.Interval)
-	}
-	logger.Info("starting hostpath-size-exporter",
-		"hostpaths", strings.Join(names, ", "),
-		"metrics_path", cfg.MetricsPath,
-		"metrics_port", cfg.MetricsPort,
-		"loglevel", cfg.LogLevel,
-	)
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -53,12 +42,53 @@ func main() {
 	registry := metrics.NewRegistry(gauge)
 
 	var wg sync.WaitGroup
-	for _, hp := range cfg.Hostpaths {
+	if cfg.Auto {
+		mgr, err := newAutoManager(ctx, cfg, gauge, logger)
+		if err != nil {
+			logger.Error("cannot start auto mode", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("starting hostpath-size-exporter in auto mode",
+			"node", mgr.NodeName,
+			"host_root", cfg.HostRoot,
+			"auto_interval", cfg.AutoInterval,
+			"auto_refresh", cfg.AutoRefresh,
+			"auto_exclude", strings.Join(cfg.AutoExcludes, ","),
+			"metrics_path", cfg.MetricsPath,
+			"metrics_port", cfg.MetricsPort,
+			"loglevel", cfg.LogLevel,
+		)
 		wg.Add(1)
-		go func(hp config.Hostpath) {
+		go func() {
 			defer wg.Done()
-			scanner.Run(ctx, hp, gauge, logger)
-		}(hp)
+			mgr.Run(ctx)
+		}()
+	} else {
+		if len(cfg.Hostpaths) == 0 {
+			logger.Warn("no --hostpath flags configured; exporter will serve an empty metric set")
+		}
+
+		names := make([]string, len(cfg.Hostpaths))
+		for i, hp := range cfg.Hostpaths {
+			names[i] = fmt.Sprintf("%s=%s(%s)", hp.Name, hp.Path, hp.Interval)
+		}
+		logger.Info("starting hostpath-size-exporter",
+			"hostpaths", strings.Join(names, ", "),
+			"metrics_path", cfg.MetricsPath,
+			"metrics_port", cfg.MetricsPort,
+			"loglevel", cfg.LogLevel,
+		)
+
+		for _, hp := range cfg.Hostpaths {
+			wg.Add(1)
+			go func(hp config.Hostpath) {
+				defer wg.Done()
+				series := gauge.WithLabelValues(hp.Name, hp.Path, "", "", "")
+				scanner.Run(ctx, hp.Name, hp.Path, hp.Interval, logger, func(bytes int64) {
+					series.Set(float64(bytes))
+				})
+			}(hp)
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -88,6 +118,42 @@ func main() {
 
 	wg.Wait()
 	logger.Info("shutdown complete")
+}
+
+// newAutoManager verifies the exporter runs in-cluster as a DaemonSet pod and
+// builds a discovery.Manager bound to that pod's node.
+func newAutoManager(ctx context.Context, cfg config.Config, gauge *prometheus.GaugeVec, logger *slog.Logger) (*discovery.Manager, error) {
+	restCfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("--auto requires running inside a Kubernetes cluster: %w", err)
+	}
+	client, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating Kubernetes client: %w", err)
+	}
+
+	podName, namespace, err := discovery.SelfIdentity()
+	if err != nil {
+		return nil, err
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	self, err := discovery.CheckDaemonSet(checkCtx, client, podName, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	return &discovery.Manager{
+		Client:   client,
+		NodeName: self.Spec.NodeName,
+		SelfUID:  self.UID,
+		HostRoot: cfg.HostRoot,
+		Interval: cfg.AutoInterval,
+		Refresh:  cfg.AutoRefresh,
+		Excludes: cfg.AutoExcludes,
+		Gauge:    gauge,
+		Logger:   logger,
+	}, nil
 }
 
 func newLogger(level string) *slog.Logger {
