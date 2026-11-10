@@ -118,9 +118,9 @@ func Load(args []string) (Config, error) {
 	metricsPath := fs.String("metrics_path", "/metrics", "HTTP path to serve Prometheus metrics on")
 	metricsPort := fs.Int("metrics_port", 9090, "TCP port to serve Prometheus metrics on")
 	logLevel := fs.String("loglevel", "info", "log level: debug, info, warn, or error")
-	auto := fs.Bool("auto", false, "auto-discover hostPath volumes of pods on this node (must run as a DaemonSet; mutually exclusive with --hostpath)")
+	auto := fs.Bool("auto", false, "auto-discover hostPath volumes and local PersistentVolumes of pods on this node (must run as a DaemonSet; mutually exclusive with --hostpath)")
 	hostRoot := fs.String("host_root", "/host", "auto mode: where the host's / is mounted inside the container")
-	autoInterval := fs.Duration("auto_interval", 60*time.Second, "auto mode: scan interval for each discovered hostPath")
+	autoInterval := fs.Duration("auto_interval", 60*time.Second, "auto mode: default scan interval for each discovered path (overridable by the oap/host-path-interval annotation)")
 	autoRefresh := fs.Duration("auto_refresh", 30*time.Second, "auto mode: how often to re-list pods on the node")
 	var autoExcludes stringList
 	fs.Var(&autoExcludes, "auto_exclude", "auto mode: host path or path prefix to never scan (repeatable), e.g. /")

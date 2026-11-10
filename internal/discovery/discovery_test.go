@@ -95,12 +95,12 @@ func TestDiscover(t *testing.T) {
 		),
 	}
 
-	got := Discover(pods, types.UID("monitoring/exporter"), []string{"/var/log", "/"})
-	want := map[string][]Owner{
-		"/var/lib/app": {
+	got := Discover(pods, types.UID("monitoring/exporter"), []string{"/var/log", "/"}, nil, time.Minute, nil)
+	want := map[string]Desired{
+		"/var/lib/app": {Interval: time.Minute, Owners: []Owner{
 			{Namespace: "a", Pod: "app2", Volume: "shared"},
 			{Namespace: "b", Pod: "app", Volume: "data"},
-		},
+		}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Discover = %+v, want %+v", got, want)

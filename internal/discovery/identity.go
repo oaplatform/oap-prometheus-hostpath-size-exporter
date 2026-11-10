@@ -1,6 +1,8 @@
 // Package discovery implements --auto mode: it verifies the exporter runs as a
-// DaemonSet pod, finds hostPath volumes declared by pods on the same node, and
-// keeps one scanner goroutine running per discovered host path.
+// DaemonSet pod, finds hostPath volumes and local PersistentVolumes
+// (spec.local.path) used by pods on the same node, applies the oap/host-path-*
+// pod/PV annotations, and keeps one scanner goroutine running per discovered
+// host path.
 package discovery
 
 import (
