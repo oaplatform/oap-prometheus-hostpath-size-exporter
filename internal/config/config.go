@@ -73,12 +73,39 @@ func parseHostpathSpec(raw string) (Hostpath, error) {
 	return Hostpath{Name: name, Path: path, Interval: interval}, nil
 }
 
+// stringList implements flag.Value for a repeatable string flag.
+type stringList []string
+
+func (s *stringList) String() string {
+	if s == nil {
+		return ""
+	}
+	return strings.Join(*s, ",")
+}
+
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
 // Config holds fully parsed and validated exporter configuration.
 type Config struct {
 	Hostpaths   []Hostpath
 	MetricsPath string
 	MetricsPort int
 	LogLevel    string
+
+	// Auto enables auto-discovery of hostPath volumes declared by pods on the
+	// exporter's own node. Mutually exclusive with Hostpaths.
+	Auto bool
+	// HostRoot is where the host's "/" is mounted inside the container.
+	HostRoot string
+	// AutoInterval is the scan interval for each discovered hostPath.
+	AutoInterval time.Duration
+	// AutoRefresh is how often pods on the node are re-listed.
+	AutoRefresh time.Duration
+	// AutoExcludes are host paths (or path prefixes) never scanned in auto mode.
+	AutoExcludes []string
 }
 
 // Load parses command-line arguments into a Config, returning an error for
@@ -91,6 +118,12 @@ func Load(args []string) (Config, error) {
 	metricsPath := fs.String("metrics_path", "/metrics", "HTTP path to serve Prometheus metrics on")
 	metricsPort := fs.Int("metrics_port", 9090, "TCP port to serve Prometheus metrics on")
 	logLevel := fs.String("loglevel", "info", "log level: debug, info, warn, or error")
+	auto := fs.Bool("auto", false, "auto-discover hostPath volumes of pods on this node (must run as a DaemonSet; mutually exclusive with --hostpath)")
+	hostRoot := fs.String("host_root", "/host", "auto mode: where the host's / is mounted inside the container")
+	autoInterval := fs.Duration("auto_interval", 60*time.Second, "auto mode: scan interval for each discovered hostPath")
+	autoRefresh := fs.Duration("auto_refresh", 30*time.Second, "auto mode: how often to re-list pods on the node")
+	var autoExcludes stringList
+	fs.Var(&autoExcludes, "auto_exclude", "auto mode: host path or path prefix to never scan (repeatable), e.g. /")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -101,6 +134,24 @@ func Load(args []string) (Config, error) {
 	}
 	if *metricsPort <= 0 || *metricsPort > 65535 {
 		return Config{}, fmt.Errorf("--metrics_port must be between 1 and 65535, got %d", *metricsPort)
+	}
+
+	if *auto && len(hostpaths) > 0 {
+		return Config{}, fmt.Errorf("--auto and --hostpath are mutually exclusive")
+	}
+	if *autoInterval <= 0 {
+		return Config{}, fmt.Errorf("--auto_interval must be positive, got %s", *autoInterval)
+	}
+	if *autoRefresh <= 0 {
+		return Config{}, fmt.Errorf("--auto_refresh must be positive, got %s", *autoRefresh)
+	}
+	if !strings.HasPrefix(*hostRoot, "/") {
+		return Config{}, fmt.Errorf("--host_root must be POSIX-style absolute (start with /), got %q", *hostRoot)
+	}
+	for _, ex := range autoExcludes {
+		if !strings.HasPrefix(ex, "/") {
+			return Config{}, fmt.Errorf("--auto_exclude must be POSIX-style absolute (start with /), got %q", ex)
+		}
 	}
 
 	seen := make(map[string]bool, len(hostpaths))
@@ -116,5 +167,11 @@ func Load(args []string) (Config, error) {
 		MetricsPath: *metricsPath,
 		MetricsPort: *metricsPort,
 		LogLevel:    *logLevel,
+
+		Auto:         *auto,
+		HostRoot:     *hostRoot,
+		AutoInterval: *autoInterval,
+		AutoRefresh:  *autoRefresh,
+		AutoExcludes: autoExcludes,
 	}, nil
 }

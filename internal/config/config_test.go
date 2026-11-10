@@ -121,3 +121,47 @@ func TestLoadInvalidPort(t *testing.T) {
 		t.Fatal("expected error for out-of-range port, got nil")
 	}
 }
+
+func TestLoadAutoDefaults(t *testing.T) {
+	cfg, err := Load([]string{"--auto"})
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	if !cfg.Auto || cfg.HostRoot != "/host" || cfg.AutoInterval != 60*time.Second || cfg.AutoRefresh != 30*time.Second {
+		t.Fatalf("unexpected auto defaults: %+v", cfg)
+	}
+}
+
+func TestLoadAutoFlags(t *testing.T) {
+	cfg, err := Load([]string{
+		"--auto",
+		"--host_root", "/rootfs",
+		"--auto_interval", "5m",
+		"--auto_refresh", "10s",
+		"--auto_exclude", "/",
+		"--auto_exclude", "/var/log",
+	})
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	if cfg.HostRoot != "/rootfs" || cfg.AutoInterval != 5*time.Minute || cfg.AutoRefresh != 10*time.Second {
+		t.Fatalf("unexpected config: %+v", cfg)
+	}
+	if len(cfg.AutoExcludes) != 2 || cfg.AutoExcludes[0] != "/" || cfg.AutoExcludes[1] != "/var/log" {
+		t.Fatalf("unexpected excludes: %v", cfg.AutoExcludes)
+	}
+}
+
+func TestLoadAutoInvalid(t *testing.T) {
+	for name, args := range map[string][]string{
+		"auto with hostpath":    {"--auto", "--hostpath", "app:/data/app:30s"},
+		"zero auto_interval":    {"--auto", "--auto_interval", "0s"},
+		"negative auto_refresh": {"--auto", "--auto_refresh", "-1s"},
+		"relative host_root":    {"--auto", "--host_root", "host"},
+		"relative auto_exclude": {"--auto", "--auto_exclude", "var/log"},
+	} {
+		if _, err := Load(args); err == nil {
+			t.Errorf("%s: expected error, got nil", name)
+		}
+	}
+}

@@ -19,3 +19,4 @@ vendor/
 
 # Local env files
 .env
+/CLAUDE.md

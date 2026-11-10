@@ -6,30 +6,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
-
-	"hostpath-size-exporter/internal/config"
 )
-
-func testGaugeVec() *prometheus.GaugeVec {
-	return prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "test_hostpath_usage_bytes",
-		Help: "test",
-	}, []string{"name", "path"})
-}
-
-func gaugeValue(t *testing.T, gauge *prometheus.GaugeVec, name, path string) float64 {
-	t.Helper()
-	m := &dto.Metric{}
-	if err := gauge.WithLabelValues(name, path).Write(m); err != nil {
-		t.Fatalf("failed to read gauge value: %v", err)
-	}
-	return m.GetGauge().GetValue()
-}
 
 func TestScanOnce(t *testing.T) {
 	dir := t.TempDir()
@@ -60,25 +40,25 @@ func TestScanOnceMissingPath(t *testing.T) {
 	}
 }
 
-func TestRunUpdatesGaugeImmediatelyAndOnTick(t *testing.T) {
+func TestRunReportsImmediatelyAndOnTick(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "a.bin"), 10)
 
-	gauge := testGaugeVec()
+	var got atomic.Int64
+	got.Store(-1)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	hp := config.Hostpath{Name: "test", Path: dir, Interval: 20 * time.Millisecond}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		Run(ctx, hp, gauge, logger)
+		Run(ctx, "test", dir, 20*time.Millisecond, logger, got.Store)
 		close(done)
 	}()
 
 	deadline := time.Now().Add(time.Second)
-	for gaugeValue(t, gauge, "test", dir) != 10 {
+	for got.Load() != 10 {
 		if time.Now().After(deadline) {
-			t.Fatalf("gauge did not reach expected value in time, got %v", gaugeValue(t, gauge, "test", dir))
+			t.Fatalf("report did not receive expected value in time, got %v", got.Load())
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -86,9 +66,9 @@ func TestRunUpdatesGaugeImmediatelyAndOnTick(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "b.bin"), 15)
 
 	deadline = time.Now().Add(time.Second)
-	for gaugeValue(t, gauge, "test", dir) != 25 {
+	for got.Load() != 25 {
 		if time.Now().After(deadline) {
-			t.Fatalf("gauge did not update after tick, got %v", gaugeValue(t, gauge, "test", dir))
+			t.Fatalf("report did not update after tick, got %v", got.Load())
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
